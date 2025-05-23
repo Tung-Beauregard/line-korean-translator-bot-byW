@@ -2,7 +2,7 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-import openai
+from openai import OpenAI
 import os
 
 app = Flask(__name__)
@@ -14,7 +14,7 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-openai.api_key = OPENAI_API_KEY
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # 主頁測試路由
 @app.route("/")
@@ -40,16 +40,20 @@ def handle_message(event):
     user_input = event.message.text
 
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "你是一個中韓翻譯機器人，只負責把輸入的中文翻譯成韓文。"},
                 {"role": "user", "content": user_input}
             ]
         )
-        reply_text = response['choices'][0]['message']['content'].strip()
+        reply_text = response.choices[0].message.content.strip()
     except Exception as e:
         reply_text = f"❌ 無法翻譯：{str(e)}"
+
+    # Debug log（可從 Render Logs 看到）
+    print("🟢 收到訊息：", user_input)
+    print("🔵 回應訊息：", reply_text)
 
     line_bot_api.reply_message(
         event.reply_token,
@@ -60,4 +64,3 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
