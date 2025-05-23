@@ -37,7 +37,7 @@ def callback():
 # 處理訊息事件
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_input = event.message.text
+    user_input = event.message.text.strip()
 
     try:
         response = client.chat.completions.create(
@@ -46,10 +46,10 @@ def handle_message(event):
                 {
                     "role": "system",
                     "content": (
-                        "你是一個中韓雙向翻譯機器人。"
-                        "如果使用者輸入的是中文，請翻譯成韓文；"
-                        "如果使用者輸入的是韓文，請翻譯成中文；"
-                        "只輸出翻譯後的文字，不要加上解釋或前後標記。"
+                        "你是一個中韓翻譯機器人。"
+                        "當使用者輸入的是中文（不論繁體或簡體），請翻譯為韓文。"
+                        "當使用者輸入的是韓文，請翻譯為繁體中文。"
+                        "請只輸出翻譯後的文字，不要加註語言或說明。"
                     )
                 },
                 {"role": "user", "content": user_input}
