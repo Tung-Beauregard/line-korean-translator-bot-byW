@@ -7,7 +7,7 @@ import os
 
 app = Flask(__name__)
 
-# 從環境變數讀取設定
+# 環境變數設定
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -16,6 +16,12 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 openai.api_key = OPENAI_API_KEY
 
+# 主頁測試路由
+@app.route("/")
+def home():
+    return "✅ Line Bot 正常運作中！"
+
+# Webhook 路由
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -28,21 +34,30 @@ def callback():
 
     return 'OK'
 
+# 處理訊息事件
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_input = event.message.text
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "你是一個中韓翻譯機器人，只負責把輸入的中文翻譯成韓文。"},
-            {"role": "user", "content": user_input}
-        ]
-    )
-    reply_text = response['choices'][0]['message']['content'].strip()
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "你是一個中韓翻譯機器人，只負責把輸入的中文翻譯成韓文。"},
+                {"role": "user", "content": user_input}
+            ]
+        )
+        reply_text = response['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        reply_text = f"❌ 無法翻譯：{str(e)}"
+
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=reply_text)
     )
 
+# 正確使用 Render 指定的 PORT
 if __name__ == "__main__":
-    app.run(port=8000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
