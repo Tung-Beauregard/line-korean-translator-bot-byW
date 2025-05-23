@@ -40,13 +40,22 @@ def handle_message(event):
     user_input = event.message.text
 
     try:
-        response = client.chat.completions.create(
+                response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "你是一個中韓翻譯機器人，只負責把輸入的中文翻譯成韓文。"},
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一個中韓翻譯機器人。"
+                        "如果用戶輸入的是中文，請翻譯成韓文；"
+                        "如果用戶輸入的是韓文，請翻譯成中文。"
+                        "只輸出翻譯後的文字，不要任何說明。"
+                    )
+                },
                 {"role": "user", "content": user_input}
             ]
         )
+
         reply_text = response.choices[0].message.content.strip()
     except Exception as e:
         reply_text = f"❌ 無法翻譯：{str(e)}"
