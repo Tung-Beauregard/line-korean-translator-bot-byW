@@ -42,10 +42,12 @@ def handle_message(event):
         print("🟡 純英文或無需翻譯內容，略過：", user_input)
         return
 
-    # 若中文字數少於2且含有英文，視為中英混合且中文比例過低，略過
     chinese_chars = re.findall(r"[\u4e00-\u9FFF]", user_input)
+    korean_chars = re.findall(r"[ㄱ-ㅎ가-힣]", user_input)
     english_chars = re.findall(r"[A-Za-z]", user_input)
-    if len(chinese_chars) < 2 and len(english_chars) > 0:
+
+    # 中文比例過低的中英混合句略過（除非是韓英混合）
+    if len(chinese_chars) < 2 and len(english_chars) > 0 and len(korean_chars) == 0:
         print("🟡 中文比例過低的中英混合句，略過：", user_input)
         return
 
@@ -80,7 +82,6 @@ def handle_message(event):
         )
         reply_text = response.choices[0].message.content.strip()
 
-        # 若回應與輸入完全一致，視為無需翻譯內容，略過回覆
         if reply_text == user_input:
             print("🟡 回應與輸入相同，略過回覆：", reply_text)
             return
