@@ -37,9 +37,16 @@ def callback():
 def handle_message(event):
     user_input = event.message.text.strip()
 
-    # 跳過純英文（無中/韓文）的訊息
+    # 跳過純英文或回應與輸入完全相同的內容（無需翻譯）
     if not re.search(r"[\u4e00-\u9FFFㄱ-ㅎ가-힣]", user_input):
         print("🟡 純英文或無需翻譯內容，略過：", user_input)
+        return
+
+    # 若中文字數少於2且含有英文，視為中英混合且中文比例過低，略過
+    chinese_chars = re.findall(r"[\u4e00-\u9FFF]", user_input)
+    english_chars = re.findall(r"[A-Za-z]", user_input)
+    if len(chinese_chars) < 2 and len(english_chars) > 0:
+        print("🟡 中文比例過低的中英混合句，略過：", user_input)
         return
 
     try:
@@ -73,9 +80,10 @@ def handle_message(event):
         )
         reply_text = response.choices[0].message.content.strip()
 
-        # 若回應與輸入完全一致，視為未翻譯錯誤
+        # 若回應與輸入完全一致，視為無需翻譯內容，略過回覆
         if reply_text == user_input:
-            reply_text = "❌ 翻譯失敗：回應與輸入內容完全相同，請檢查語意處理。"
+            print("🟡 回應與輸入相同，略過回覆：", reply_text)
+            return
 
     except Exception as e:
         reply_text = f"❌ 無法翻譯：{str(e)}"
