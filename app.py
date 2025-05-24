@@ -35,9 +35,16 @@ def callback():
     return 'OK'
 
 # 核心翻譯邏輯
+import re
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_input = event.message.text.strip()
+
+    # 如果完全沒有中文或韓文，就不回覆
+    if not re.search(r"[\u4e00-\u9FFFㄱ-ㅎ가-힣]", user_input):
+        print("🟡 純英文或非目標語言訊息，略過回覆：", user_input)
+        return  # 不回覆，靜默略過
 
     try:
         response = client.chat.completions.create(
@@ -46,12 +53,14 @@ def handle_message(event):
                 {
                     "role": "system",
                     "content": (
-                        "你是一個中韓翻譯機器人，請根據以下規則翻譯使用者輸入內容：\n\n"
-                        "1. 若使用者輸入的是中文（無論是簡體中文或繁體中文），請翻譯為韓文。\n"
-                        "2. 若使用者輸入的是韓文，請翻譯為繁體中文（台灣常用字），不要使用簡體。\n"
-                        "3. 若輸入中含有英文字詞、數字、emoji、標點符號，請全部保留原樣，不得翻譯或改寫。\n"
-                        "4. 不要補全語句、不要改寫句子、不要加說明。\n"
-                        "5. 請只回傳翻譯後的內容，不附加說明或語言標籤。"
+                        "你是一個中韓雙向翻譯機器人，請依照以下規則翻譯使用者的訊息：\n\n"
+                        "1. 若使用者輸入為「中文」（不論是繁體或簡體），請翻譯為韓文。\n"
+                        "2. 若輸入為「韓文」，請翻譯為繁體中文（台灣用字）。\n"
+                        "3. 若輸入為「中英混合」，請將中文翻譯為韓文，英文部分保留。\n"
+                        "4. 若輸入為「韓英混合」，請將韓文翻譯為繁體中文，英文保留。\n"
+                        "5. 若輸入純英文、emoji、數字或標點符號，不要翻譯，原樣保留。\n"
+                        "6. 請勿改寫、勿補全，僅翻譯指定部分。\n"
+                        "7. 只回傳翻譯後的文字，不附加說明或語言標籤。"
                     )
                 },
                 {"role": "user", "content": user_input}
@@ -69,6 +78,7 @@ def handle_message(event):
         event.reply_token,
         TextSendMessage(text=reply_text)
     )
+
 
 
 # 正確使用 Render 指定的 PORT
