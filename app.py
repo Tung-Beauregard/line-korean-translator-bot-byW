@@ -16,12 +16,12 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# 主頁測試路由
+# 主頁測試
 @app.route("/")
 def home():
     return "✅ Line Bot 正常運作中！"
 
-# Webhook 路由
+# LINE Webhook
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -34,7 +34,7 @@ def callback():
 
     return 'OK'
 
-# 處理訊息事件
+# 核心翻譯邏輯
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_input = event.message.text.strip()
@@ -46,17 +46,18 @@ def handle_message(event):
                 {
                     "role": "system",
                     "content": (
-                        "你是一個中韓翻譯機器人。"
-                        "當使用者輸入的是中文（不論繁體或簡體），請翻譯為韓文。"
-                        "當使用者輸入的是韓文，請翻譯為繁體中文。"
-                        "請只輸出翻譯後的文字，不要加註語言或說明。"
+                        "你是一個中韓雙向翻譯機器人。"
+                        "若使用者輸入的是中文（不論簡體或繁體），請翻譯為韓文；"
+                        "若使用者輸入的是韓文，請翻譯為**繁體中文（台灣用字）**。"
+                        "若輸入中含有英文單字（如 Line、bug、XD）、emoji 或表情符號，請保留原樣。"
+                        "請逐字對應翻譯，不要改寫、不補句、不加強語氣。"
+                        "請只輸出翻譯後的文字，不要附加語言標籤、語氣詞或說明。"
                     )
                 },
                 {"role": "user", "content": user_input}
             ]
         )
         reply_text = response.choices[0].message.content.strip()
-
     except Exception as e:
         reply_text = f"❌ 無法翻譯：{str(e)}"
 
@@ -67,6 +68,7 @@ def handle_message(event):
         event.reply_token,
         TextSendMessage(text=reply_text)
     )
+
 # 正確使用 Render 指定的 PORT
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
