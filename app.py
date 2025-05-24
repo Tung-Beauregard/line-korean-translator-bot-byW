@@ -73,6 +73,10 @@ def handle_message(event):
         )
         reply_text = response.choices[0].message.content.strip()
 
+        # 若回應與輸入完全一致，視為未翻譯錯誤
+        if reply_text == user_input:
+            reply_text = "❌ 翻譯失敗：回應與輸入內容完全相同，請檢查語意處理。"
+
     except Exception as e:
         reply_text = f"❌ 無法翻譯：{str(e)}"
 
