@@ -46,18 +46,19 @@ def handle_message(event):
                 {
                     "role": "system",
                     "content": (
-                        "你是一個中韓雙向翻譯機器人。"
-                        "若使用者輸入的是中文（不論簡體或繁體），請翻譯為韓文；"
-                        "若使用者輸入的是韓文，請翻譯為**繁體中文（台灣用字）**。"
-                        "若輸入中含有英文單字（如 Line、bug、XD）、emoji 或表情符號，請保留原樣。"
-                        "請逐字對應翻譯，不要改寫、不補句、不加強語氣。"
-                        "請只輸出翻譯後的文字，不要附加語言標籤、語氣詞或說明。"
+                        "你是一個中韓翻譯機器人，請根據以下規則翻譯使用者輸入內容：\n\n"
+                        "1. 若使用者輸入的是中文（無論是簡體中文或繁體中文），請翻譯為韓文。\n"
+                        "2. 若使用者輸入的是韓文，請翻譯為繁體中文（台灣常用字），不要使用簡體。\n"
+                        "3. 若輸入中含有英文字詞、數字、emoji、標點符號，請全部保留原樣，不得翻譯或改寫。\n"
+                        "4. 不要補全語句、不要改寫句子、不要加說明。\n"
+                        "5. 請只回傳翻譯後的內容，不附加說明或語言標籤。"
                     )
                 },
                 {"role": "user", "content": user_input}
             ]
         )
         reply_text = response.choices[0].message.content.strip()
+
     except Exception as e:
         reply_text = f"❌ 無法翻譯：{str(e)}"
 
@@ -68,6 +69,7 @@ def handle_message(event):
         event.reply_token,
         TextSendMessage(text=reply_text)
     )
+
 
 # 正確使用 Render 指定的 PORT
 if __name__ == "__main__":
