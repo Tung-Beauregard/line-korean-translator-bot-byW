@@ -42,6 +42,11 @@ def handle_message(event):
         print("🟡 純英文或無需翻譯內容，略過：", user_input)
         return
 
+    # 跳過描述翻譯條件或指令型的語句
+    if re.search(r"(只在.*翻譯|不要翻譯|開啟翻譯|關閉翻譯|翻譯規則|語言規則|才翻譯|才會翻譯)", user_input):
+        print("🟡 指令性說明語句略過：", user_input)
+        return
+
     chinese_chars = re.findall(r"[\u4e00-\u9FFF]", user_input)
     korean_chars = re.findall(r"[ㄱ-ㅎ가-힣]", user_input)
     english_chars = re.findall(r"[A-Za-z]", user_input)
