@@ -2,7 +2,7 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-import openai
+from openai import OpenAI
 import os
 import re
 
@@ -15,7 +15,7 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-openai.api_key = OPENAI_API_KEY
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 @app.route("/")
 def home():
@@ -40,7 +40,7 @@ def handle_message(event):
     if re.search(r"(只在.*翻譯|不要翻譯|翻譯規則|語言規則|開啟|關閉)", user_input):
         return
 
-    chinese_chars = re.findall(r"[一-鿿]", user_input)
+    chinese_chars = re.findall(r"[\u4e00-\u9FFF]", user_input)
     korean_chars = re.findall(r"[ㄱ-ㅎ가-힣]", user_input)
     english_chars = re.findall(r"[A-Za-z]", user_input)
 
@@ -64,14 +64,14 @@ def handle_message(event):
         return
 
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": instruction},
                 {"role": "user", "content": user_input}
             ]
         )
-        reply_text = response.choices[0].message["content"].strip()
+        reply_text = response.choices[0].message.content.strip()
     except Exception as e:
         reply_text = f"❌ 翻譯失敗：{str(e)}"
 
