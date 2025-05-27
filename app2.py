@@ -61,6 +61,7 @@ def handle_message(event):
         reply = "無法辨識語言，請輸入中文、韓文或英文。"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-
+    
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
