@@ -4,12 +4,28 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from openai import OpenAI
 import os
+import re
 
 app = Flask(__name__)
 client = OpenAI()
 
 line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN_2"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET_2"])
+
+# 新增：判斷是否該跳過翻譯（純網址 / 純 emoji）
+def should_skip_translation(text):
+    text = text.strip()
+
+    # 純網址
+    if re.fullmatch(r"https?://\S+|www\.\S+", text):
+        return True
+
+    # 純 emoji（使用 Unicode 區段簡單偵測）
+    emoji_pattern = re.compile(r"^[\U0001F300-\U0001FAFF\u2600-\u26FF\u2700-\u27BF\s]+$")
+    if emoji_pattern.fullmatch(text):
+        return True
+
+    return False
 
 def translate(prompt):
     response = client.chat.completions.create(
@@ -32,7 +48,11 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_input = event.message.text
+    user_input = event.message.text.strip()
+
+    # 🛑 不翻譯純網址或純 emoji
+    if should_skip_translation(user_input):
+        return
 
     # 偵測語言
     detect_prompt = f"Detect the language of the following text. Only respond with one word from [Chinese, Korean, English]:\n{user_input}"
