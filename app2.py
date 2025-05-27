@@ -8,7 +8,6 @@ import os
 app = Flask(__name__)
 client = OpenAI()
 
-# Render 上的環境變數
 line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN_2"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET_2"])
 
@@ -36,23 +35,26 @@ def handle_message(event):
     user_input = event.message.text
 
     # 偵測語言
-    detect_prompt = f"Detect the language of the following text and return one word only from [Chinese, Korean, English]: {user_input}"
+    detect_prompt = f"Detect the language of the following text. Only respond with one word from [Chinese, Korean, English]:\n{user_input}"
     lang = translate(detect_prompt)
 
+    # 中文輸入 → 輸出 英 + 韓
     if "Chinese" in lang:
-        eng = translate(f"Translate the following Traditional Chinese to English:\n{user_input}")
-        kor = translate(f"Translate the following English to Korean with natural word order and polite tone:\n{eng}")
-        reply = f"[中] {user_input}\n[英] {eng}\n[韓] {kor}"
+        eng = translate(f"Translate the following Traditional Chinese to English. Only output the result. No explanation:\n{user_input}")
+        kor = translate(f"Translate the following English to Korean. Only output the Korean sentence in polite and natural tone:\n{eng}")
+        reply = f"{eng}\n{kor}"
 
+    # 韓文輸入 → 輸出 英 + 中
     elif "Korean" in lang:
-        eng = translate(f"Translate the following Korean to English:\n{user_input}")
-        zh = translate(f"Translate the following English to Traditional Chinese:\n{eng}")
-        reply = f"[韓] {user_input}\n[英] {eng}\n[中] {zh}"
+        eng = translate(f"Translate the following Korean to English. Only output the result. No explanation:\n{user_input}")
+        zh = translate(f"Translate the following English to Traditional Chinese. Only output the result. No explanation:\n{eng}")
+        reply = f"{eng}\n{zh}"
 
+    # 英文輸入 → 輸出 中 + 韓
     elif "English" in lang:
-        zh = translate(f"Translate the following English to Traditional Chinese:\n{user_input}")
-        kor = translate(f"Translate the following English to Korean with natural word order and polite tone:\n{user_input}")
-        reply = f"[英] {user_input}\n[中] {zh}\n[韓] {kor}"
+        zh = translate(f"Translate the following English to Traditional Chinese. Only output the result. No explanation:\n{user_input}")
+        kor = translate(f"Translate the following English to Korean. Only output the Korean sentence in polite and natural tone:\n{user_input}")
+        reply = f"{zh}\n{kor}"
 
     else:
         reply = "無法辨識語言，請輸入中文、韓文或英文。"
