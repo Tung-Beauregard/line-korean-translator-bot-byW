@@ -25,10 +25,12 @@ def should_skip_translation(text):
     if emoji_pattern.fullmatch(text):
         return True
 
-    # 條件 3：純標點或 LINE 表情貼 (如 (angel Moon) )
-    if re.fullmatch(r"[.?!,…!！\s]+", text):  # 純標點
+    # 條件 3：純標點符號（包含中英文常見符號）
+    if re.fullmatch(r"[.?!,…!！~？、。，\s]+", text):
         return True
-    if re.fullmatch(r"\([^\)]{1,20}\)", text):  # LINE 表情貼格式
+
+    # 條件 4：LINE 表情貼格式 (angel Moon)
+    if re.fullmatch(r"\([^\)]{1,20}\)", text):
         return True
 
     return False
