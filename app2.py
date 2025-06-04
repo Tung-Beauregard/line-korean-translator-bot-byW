@@ -16,7 +16,7 @@ handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET_2"])
 # ----------------------------------------
 # 🔧 規則設定區
 # 1-A：只取偵測語言回應的第一個詞
-# 1-B：網址 / emoji 直接跳過翻譯
+# 1-B：網址 / emoji 直接跳過翻譯（不回覆訊息，避免複製）
 # 2-C：中文 ➜ 韓文，需先經英文潤飾
 # 2-D：韓文一律使用敬語（-요 / -습니다）
 # 3-A：保持回覆行序，翻譯失敗以「(略)」佔位
@@ -34,7 +34,7 @@ LANG_TARGETS = {
 CACHE_SIZE = 1000  # 保留最近 1000 筆
 _translation_cache: "OrderedDict[str, str]" = OrderedDict()
 
-def _cache_get(key: str) -> str | None:
+def _cache_get(key: str):
     try:
         value = _translation_cache.pop(key)
         _translation_cache[key] = value  # 最近使用移至尾端
@@ -42,12 +42,11 @@ def _cache_get(key: str) -> str | None:
     except KeyError:
         return None
 
-def _cache_put(key: str, value: str) -> None:
+def _cache_put(key: str, value: str):
     if key in _translation_cache:
         _translation_cache.pop(key)
     elif len(_translation_cache) >= CACHE_SIZE:
-        # 彈出最早未使用項
-        _translation_cache.popitem(last=False)
+        _translation_cache.popitem(last=False)  # 彈出最舊
     _translation_cache[key] = value
 
 # ===== 通用 GPT 呼叫（具備快取） =====
@@ -68,10 +67,8 @@ def translate(prompt: str) -> str:
 
 def should_skip_translation(text: str) -> bool:
     text = text.strip()
-    # 純網址
     if re.fullmatch(r"https?://\S+|www\.\S+", text):
         return True
-    # 純 emoji
     if re.fullmatch(r"[\U0001F300-\U0001FAFF\u2600-\u26FF\u2700-\u27BF\s]+", text):
         return True
     return False
@@ -82,7 +79,7 @@ def safe_detect(text: str) -> str:
     raw = translate(
         f"Detect the language of the following text. Only respond with one word from [Chinese, Korean, English]:\n{text}"
     )
-    first = raw.split()[0]  # 只取第一個詞
+    first = raw.split()[0]
     lower = first.lower()
     if lower.startswith("chinese"):
         return "Chinese"
@@ -90,9 +87,9 @@ def safe_detect(text: str) -> str:
         return "Korean"
     if lower.startswith("english"):
         return "English"
-    return first  # 回傳原樣，讓後續檢查不到時提示錯誤
+    return first
 
-# ===== 主程式 =====
+# ===== Webhook Entry =====
 
 @app.route("/callback2", methods=["POST"])
 def callback():
@@ -111,10 +108,9 @@ def callback():
 def handle_message(event):
     user_input = event.message.text.strip()
 
-    # 規則 1-B：網址 / emoji 直接回傳
+    # 規則 1-B：網址 / emoji → 不回覆，避免重複貼
     if should_skip_translation(user_input):
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=user_input))
-        return
+        return  # 直接結束處理
 
     # 語言偵測（1-A）
     lang = safe_detect(user_input)
@@ -123,12 +119,11 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
         return
 
-    results: list[str] = []
+    results = []
 
-    # 逐一翻譯，保持既定順序 (3-A)
     for target in LANG_TARGETS[lang]:
         try:
-            # —— 中文 ➜ 韓文：先經英文潤飾 (2-C) ——
+            # —— 2-C：中文 ➜ 韓文需先英文潤飾 ——
             if lang == "Chinese" and target == "Korean":
                 matured_en = translate(
                     f"Rewrite the following Traditional Chinese text into mature, natural English. Only output English:\n{user_input}"
@@ -136,7 +131,7 @@ def handle_message(event):
                 result = translate(
                     f"Translate the following English text to Korean. Use polite tone (-요/-습니다) and natural word order. Only output Korean:\n{matured_en}"
                 )
-            # —— 其他目標語言 ——
+            # —— 其他語向 ——
             elif target == "English":
                 result = translate(
                     f"Translate the following text to English. Only output the translation. If it's a cultural term like 'Monkey King', translate it accordingly:\n{user_input}"
@@ -146,16 +141,14 @@ def handle_message(event):
                     f"Translate the following text to Traditional Chinese. Only output the translation. If it's a cultural name, use the locally known version:\n{user_input}"
                 )
             elif target == "Korean":
-                # 規則 2-D：韓文敬語
                 result = translate(
                     f"Translate the following text to Korean. Use polite tone (-요/-습니다) and natural word order. If it's a cultural name like 'Monkey King', use the commonly known Korean equivalent. Only output the result:\n{user_input}"
                 )
             else:
-                result = "(略)"  # 不應發生
+                result = "(略)"
         except Exception:
-            # 發生例外時佔位 (3-A)
-            result = "(略)"
-        results.append(result or "(略)")  # 空字串也佔位
+            result = "(略)"  # (3-A) 失敗佔位
+        results.append(result or "(略)")
 
     reply = "\n".join(results)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
