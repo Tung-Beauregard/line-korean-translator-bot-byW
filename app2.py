@@ -102,6 +102,12 @@ def handle_message(event):
         return
     if len(user_input) <= 2 and re.fullmatch(r"[\W_]+", user_input):
         return
+    
+    # 🔧 新增：若為指定縮寫（ROC, DRK...），照抄回覆
+    if is_preserved_abbreviation(user_input):
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=user_input))
+    return
+
 
     # 規則 1-B：網址 / emoji → 不回覆
     if should_skip_translation(user_input):
