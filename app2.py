@@ -61,10 +61,23 @@ def translate(prompt: str) -> str:
 
 def should_skip_translation(text: str) -> bool:
     text = text.strip()
+
+    # 規則 1：網址
     if re.fullmatch(r"https?://\S+|www\.\S+", text):
         return True
+
+    # 規則 2：純 emoji / 空格 / 特殊符號
     if re.fullmatch(r"[\U0001F300-\U0001FAFF\u2600-\u26FF\u2700-\u27BF\s]+", text):
         return True
+
+    # 規則 3：純數字（可含 , . - 等格式符號）
+    if re.fullmatch(r"[-+]?[\d,]+(\.\d+)?", text):
+        return True
+
+    # 規則 4：不含中、英、韓文 → 跳過翻譯
+    if not re.search(r"[\u4e00-\u9fff\uac00-\ud7afA-Za-z]", text):
+        return True
+
     return False
 
 def safe_detect(text: str) -> str:
