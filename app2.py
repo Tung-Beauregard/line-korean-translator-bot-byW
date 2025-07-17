@@ -118,7 +118,7 @@ def handle_message(event):
     
     # 🔧 新增：若為指定縮寫（ROC, DRK...），照抄回覆
     if is_preserved_abbreviation(user_input):
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=user_input))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=user_input))
     return
 
 
