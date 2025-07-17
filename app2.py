@@ -15,13 +15,6 @@ handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET_2"])
 
 # ----------------------------------------
 # 🔧 規則設定區
-# 1-A：只取偵測語言回應的第一個詞
-# 1-B：網址 / emoji 直接跳過翻譯（不回覆訊息，避免複製）
-# 🔧 1-B 擴充：問號、無意義標點也跳過
-# 2-C：中文 ➜ 韓文，需先經英文潤飾
-# 2-D：韓文一律使用敬語（-요 / -습니다）
-# 3-A：保持回覆行序，翻譯失敗以「(略)」佔位
-# 3-C：簡易 LRU 快取，減少重複 API 呼叫
 # ----------------------------------------
 
 LANG_TARGETS = {
@@ -59,22 +52,26 @@ def translate(prompt: str) -> str:
     _cache_put(prompt, result)
     return result
 
+def is_preserved_abbreviation(text: str) -> bool:
+    preserved = {"ROC", "DRK", "SVS", "HQ", "FFA"}  # 可擴充
+    return text.strip().upper() in preserved
+
 def should_skip_translation(text: str) -> bool:
     text = text.strip()
 
-    # 規則 1：網址
+    # 網址
     if re.fullmatch(r"https?://\S+|www\.\S+", text):
         return True
 
-    # 規則 2：純 emoji / 空格 / 特殊符號
+    # emoji 或符號
     if re.fullmatch(r"[\U0001F300-\U0001FAFF\u2600-\u26FF\u2700-\u27BF\s]+", text):
         return True
 
-    # 規則 3：純數字（可含 , . - 等格式符號）
+    # 純數字（含符號）
     if re.fullmatch(r"[-+]?[\d,]+(\.\d+)?", text):
         return True
 
-    # 規則 4：不含中、英、韓文 → 跳過翻譯
+    # 不含中英韓字元
     if not re.search(r"[\u4e00-\u9fff\uac00-\ud7afA-Za-z]", text):
         return True
 
@@ -110,19 +107,18 @@ def callback():
 def handle_message(event):
     user_input = event.message.text.strip()
 
-    # 🔧 新增：忽略純問號、無意義標點
+    # 忽略問號或符號
     if user_input in {"?", "？", "??", "？？"} or re.fullmatch(r"[?？]+", user_input):
         return
     if len(user_input) <= 2 and re.fullmatch(r"[\W_]+", user_input):
         return
-    
-    # 🔧 新增：若為指定縮寫（ROC, DRK...），照抄回覆
+
+    # 特定縮寫照抄回覆
     if is_preserved_abbreviation(user_input):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=user_input))
-    return
+        return
 
-
-    # 規則 1-B：網址 / emoji → 不回覆
+    # 跳過翻譯條件
     if should_skip_translation(user_input):
         return
 
@@ -163,7 +159,6 @@ def handle_message(event):
 
     reply = "\n".join(results)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
