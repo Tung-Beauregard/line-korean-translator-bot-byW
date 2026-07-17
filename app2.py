@@ -1,11 +1,17 @@
+import logging
+import os
+import re
+import threading
+from collections import OrderedDict
+
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from openai import OpenAI
-import os
-import re
-from collections import OrderedDict
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 client = OpenAI()
@@ -25,31 +31,47 @@ LANG_TARGETS = {
 
 CACHE_SIZE = 1000
 _translation_cache: "OrderedDict[str, str]" = OrderedDict()
+_cache_lock = threading.Lock()
 
 def _cache_get(key: str):
-    try:
-        value = _translation_cache.pop(key)
-        _translation_cache[key] = value
-        return value
-    except KeyError:
-        return None
+    with _cache_lock:
+        try:
+            value = _translation_cache.pop(key)
+            _translation_cache[key] = value
+            return value
+        except KeyError:
+            return None
 
 def _cache_put(key: str, value: str):
-    if key in _translation_cache:
-        _translation_cache.pop(key)
-    elif len(_translation_cache) >= CACHE_SIZE:
-        _translation_cache.popitem(last=False)
-    _translation_cache[key] = value
+    with _cache_lock:
+        if key in _translation_cache:
+            _translation_cache.pop(key)
+        elif len(_translation_cache) >= CACHE_SIZE:
+            _translation_cache.popitem(last=False)
+        _translation_cache[key] = value
 
-def translate(prompt: str) -> str:
-    if cached := _cache_get(prompt):
+REFUSAL_PATTERN = re.compile(
+    r"(?i)\bI apologize\b|\bI'm sorry\b|\bI am sorry\b|\bas an AI\b|"
+    r"as a language model|I cannot (?:provide|assist|translate)|"
+    r"could you (?:please )?(?:clarify|provide more context|verify)"
+)
+
+def translate(system_prompt: str, text: str) -> str:
+    cache_key = f"{system_prompt}\u241f{text}"
+    if cached := _cache_get(cache_key):
         return cached
     response = client.chat.completions.create(
         model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}]
+        temperature=0,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ],
     )
     result = response.choices[0].message.content.strip()
-    _cache_put(prompt, result)
+    if REFUSAL_PATTERN.search(result):
+        raise ValueError(f"model returned a refusal-like response: {result[:100]!r}")
+    _cache_put(cache_key, result)
     return result
 
 def is_preserved_abbreviation(text: str) -> bool:
@@ -77,11 +99,53 @@ def should_skip_translation(text: str) -> bool:
 
     return False
 
+DETECT_SYSTEM_PROMPT = (
+    "You are a language detector for text that may mix Chinese, Korean, and "
+    "English. Identify which one of these three languages the text is "
+    "PRIMARILY written in (the dominant one, by intent, not just by raw "
+    "character count). Respond with exactly one word from this set: "
+    "Chinese, Korean, English. No punctuation, no explanation, no other words."
+)
+
+HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+HANGUL_RE = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]")
+LATIN_RE = re.compile(r"[A-Za-z]")
+
+def _script_counts(text: str) -> dict:
+    return {
+        "Chinese": len(HAN_RE.findall(text)),
+        "Korean": len(HANGUL_RE.findall(text)),
+        "English": len(LATIN_RE.findall(text)),
+    }
+
+def detect_by_script(text: str):
+    """用字元範圍做規則式語言判斷。中文/韓文的 Unicode 區段完全不重疊，
+    不會有互相誤判的問題；領先幅度不夠大（代表混雜程度高）則回傳 None，
+    交給 GPT 輔助判斷。"""
+    counts = _script_counts(text)
+    total = sum(counts.values())
+    if total == 0:
+        return None
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    top_lang, top_count = ranked[0]
+    _, second_count = ranked[1]
+    top_ratio = top_count / total
+    lead_ratio = (top_count - second_count) / total
+    if top_ratio >= 0.6 and lead_ratio >= 0.2:
+        return top_lang
+    return None
+
 def safe_detect(text: str) -> str:
-    raw = translate(
-        f"Detect the language of the following text. Only respond with one word from [Chinese, Korean, English]:\n{text}"
-    )
-    first = raw.split()[0]
+    script_lang = detect_by_script(text)
+    if script_lang:
+        return script_lang
+
+    # 規則判斷不出主要語言（混雜程度較高），交給 GPT 輔助判斷
+    raw = translate(DETECT_SYSTEM_PROMPT, text)
+    parts = raw.split()
+    if not parts:
+        return ""
+    first = parts[0]
     lower = first.lower()
     if lower.startswith("chinese"):
         return "Chinese"
@@ -93,7 +157,9 @@ def safe_detect(text: str) -> str:
 
 @app.route("/callback2", methods=["POST"])
 def callback():
-    signature = request.headers["X-Line-Signature"]
+    signature = request.headers.get("X-Line-Signature")
+    if not signature:
+        abort(400)
     body = request.get_data(as_text=True)
 
     try:
@@ -103,8 +169,7 @@ def callback():
 
     return "OK"
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
+def _handle_message_inner(event):
     user_input = event.message.text.strip()
 
     # 忽略問號或符號
@@ -134,31 +199,83 @@ def handle_message(event):
         try:
             if lang == "Chinese" and target == "Korean":
                 matured_en = translate(
-                    f"Rewrite the following Traditional Chinese text into mature, natural English. Only output English:\n{user_input}"
+                    "You are rewriting Traditional Chinese text into natural, mature "
+                    "English, to be used as an intermediate step before Korean "
+                    "translation. Output ONLY the English text - no explanations, "
+                    "no commentary. Always produce your best-effort rewrite, even if "
+                    "the input is short, informal, or slang - never refuse or ask for "
+                    "clarification.",
+                    user_input,
                 )
                 result = translate(
-                    f"Translate the following English text to Korean. Use polite tone (-요/-습니다) and natural word order. Only output Korean:\n{matured_en}"
+                    "You are a translation engine. Translate the given English text "
+                    "into Korean. Use polite tone (-요/-습니다) and natural word order. "
+                    "Output ONLY the Korean translation - no explanations, no "
+                    "commentary. If a proper noun (person, place, character, brand) "
+                    "has a well-known, commonly used Korean name, use that name "
+                    "instead of a literal translation. Always produce your "
+                    "best-effort translation, even if the input is short or "
+                    "ambiguous - never refuse or ask for clarification.",
+                    matured_en,
                 )
             elif target == "English":
                 result = translate(
-                    f"Translate the following text to English. Only output the translation. If it's a cultural term like 'Monkey King', translate it accordingly:\n{user_input}"
+                    "You are a translation engine. Translate the given text into "
+                    "natural English. Output ONLY the translated text - no "
+                    "explanations, no commentary. If the text contains a proper "
+                    "noun (person, place, character, brand) that has a well-known, "
+                    "commonly used English name, use that established name instead "
+                    "of a literal translation. Always produce your best-effort "
+                    "translation, even if the input is short, informal, or "
+                    "ambiguous - never refuse or ask for clarification.",
+                    user_input,
                 )
             elif target == "Chinese":
                 result = translate(
-                    f"Translate the following text to Traditional Chinese. Only output the translation. If it's a cultural name, use the locally known version:\n{user_input}"
+                    "You are a translation engine. Translate the given text into "
+                    "Traditional Chinese. Output ONLY the translated text - no "
+                    "explanations, no commentary. If the text contains a proper "
+                    "noun that has a well-known, locally used Chinese name, use "
+                    "that name instead of a literal translation. Always produce "
+                    "your best-effort translation, even if the input is short, "
+                    "informal, or ambiguous - never refuse or ask for "
+                    "clarification.",
+                    user_input,
                 )
             elif target == "Korean":
                 result = translate(
-                    f"Translate the following text to Korean. Use polite tone (-요/-습니다) and natural word order. If it's a cultural name like 'Monkey King', use the commonly known Korean equivalent. Only output the result:\n{user_input}"
+                    "You are a translation engine. Translate the given text into "
+                    "Korean. Use polite tone (-요/-습니다) and natural word order. "
+                    "Output ONLY the translated text - no explanations, no "
+                    "commentary. If the text contains a proper noun that has a "
+                    "well-known, commonly used Korean name, use that name instead "
+                    "of a literal translation. Always produce your best-effort "
+                    "translation, even if the input is short, informal, or "
+                    "ambiguous - never refuse or ask for clarification.",
+                    user_input,
                 )
             else:
                 result = "(略)"
         except Exception:
+            logger.exception("translate failed: lang=%s target=%s text=%s", lang, target, user_input)
             result = "(略)"
         results.append(result or "(略)")
 
     reply = "\n".join(results)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    try:
+        _handle_message_inner(event)
+    except Exception:
+        logger.exception("handle_message failed")
+        try:
+            line_bot_api.reply_message(
+                event.reply_token, TextSendMessage(text="翻譯發生錯誤，請稍後再試")
+            )
+        except Exception:
+            logger.exception("failed to send error reply")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
