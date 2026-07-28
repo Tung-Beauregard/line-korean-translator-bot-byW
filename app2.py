@@ -3,37 +3,142 @@ import os
 import re
 import threading
 from collections import OrderedDict
+from typing import Optional
 
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from flask import Flask, abort, jsonify, request
 from openai import OpenAI
 
-logging.basicConfig(level=logging.INFO)
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    ApiClient,
+    Configuration,
+    MessagingApi,
+    ReplyMessageRequest,
+    TextMessage,
+)
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
+
+
+# ============================================================
+# 基本設定
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-client = OpenAI()
 
-line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN_2"])
-handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET_2"])
 
-# ----------------------------------------
-# 🔧 規則設定區
-# ----------------------------------------
+# ============================================================
+# 環境變數
+# ============================================================
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
+
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get(
+    "LINE_CHANNEL_ACCESS_TOKEN_2"
+)
+
+LINE_CHANNEL_SECRET = os.environ.get(
+    "LINE_CHANNEL_SECRET_2"
+)
+
+
+def validate_environment() -> None:
+    """啟動時檢查必要環境變數。"""
+
+    missing = []
+
+    if not OPENAI_API_KEY:
+        missing.append("OPENAI_API_KEY")
+
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        missing.append("LINE_CHANNEL_ACCESS_TOKEN_2")
+
+    if not LINE_CHANNEL_SECRET:
+        missing.append("LINE_CHANNEL_SECRET_2")
+
+    if missing:
+        raise RuntimeError(
+            "缺少必要環境變數："
+            + ", ".join(missing)
+        )
+
+
+validate_environment()
+
+
+# ============================================================
+# OpenAI 設定
+# ============================================================
+
+openai_client = OpenAI(
+    api_key=OPENAI_API_KEY,
+    timeout=40.0,
+    max_retries=2,
+)
+
+
+# ============================================================
+# LINE Bot 設定
+# ============================================================
+
+line_configuration = Configuration(
+    access_token=LINE_CHANNEL_ACCESS_TOKEN
+)
+
+line_handler = WebhookHandler(
+    LINE_CHANNEL_SECRET
+)
+
+
+# ============================================================
+# 翻譯規則
+# ============================================================
 
 LANG_TARGETS = {
     "Chinese": ["English", "Korean"],
     "Korean": ["English", "Chinese"],
-    "English": ["Chinese", "Korean"]
+    "English": ["Chinese", "Korean"],
 }
 
+LANGUAGE_DISPLAY_NAMES = {
+    "Chinese": "中文",
+    "English": "英文",
+    "Korean": "韓文",
+}
+
+# 這些縮寫直接照原文回覆，不進行翻譯
+PRESERVED_ABBREVIATIONS = {
+    "ROC",
+    "DRK",
+    "SVS",
+    "HQ",
+    "FFA",
+}
+
+MAX_INPUT_LENGTH = 4000
+MAX_LINE_OUTPUT_LENGTH = 4900
 CACHE_SIZE = 1000
+
+
+# ============================================================
+# 翻譯快取
+# ============================================================
+
 _translation_cache: "OrderedDict[str, str]" = OrderedDict()
 _cache_lock = threading.Lock()
 
-def _cache_get(key: str):
+
+def cache_get(key: str) -> Optional[str]:
+    """讀取 LRU 快取。"""
+
     with _cache_lock:
         try:
             value = _translation_cache.pop(key)
@@ -42,240 +147,580 @@ def _cache_get(key: str):
         except KeyError:
             return None
 
-def _cache_put(key: str, value: str):
+
+def cache_put(key: str, value: str) -> None:
+    """寫入 LRU 快取。"""
+
     with _cache_lock:
         if key in _translation_cache:
             _translation_cache.pop(key)
+
         elif len(_translation_cache) >= CACHE_SIZE:
             _translation_cache.popitem(last=False)
+
         _translation_cache[key] = value
 
-REFUSAL_PATTERN = re.compile(
-    r"(?i)\bI apologize\b|\bI'm sorry\b|\bI am sorry\b|\bas an AI\b|"
-    r"as a language model|I cannot (?:provide|assist|translate)|"
-    r"could you (?:please )?(?:clarify|provide more context|verify)"
-)
 
-def translate(system_prompt: str, text: str) -> str:
-    cache_key = f"{system_prompt}\u241f{text}"
-    if cached := _cache_get(cache_key):
-        return cached
-    response = client.chat.completions.create(
-        model="gpt-5.6-luna",
-        temperature=0,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text},
-        ],
-    )
-    result = response.choices[0].message.content.strip()
-    if REFUSAL_PATTERN.search(result):
-        raise ValueError(f"model returned a refusal-like response: {result[:100]!r}")
-    _cache_put(cache_key, result)
-    return result
-
-def is_preserved_abbreviation(text: str) -> bool:
-    preserved = {"ROC", "DRK", "SVS", "HQ", "FFA"}  # 可擴充
-    return text.strip().upper() in preserved
-
-def should_skip_translation(text: str) -> bool:
-    text = text.strip()
-
-    # 網址
-    if re.fullmatch(r"https?://\S+|www\.\S+", text):
-        return True
-
-    # emoji 或符號
-    if re.fullmatch(r"[\U0001F300-\U0001FAFF\u2600-\u26FF\u2700-\u27BF\s]+", text):
-        return True
-
-    # 純數字（含符號）
-    if re.fullmatch(r"[-+]?[\d,]+(\.\d+)?", text):
-        return True
-
-    # 不含中英韓字元
-    if not re.search(r"[\u4e00-\u9fff\uac00-\ud7afA-Za-z]", text):
-        return True
-
-    return False
-
-DETECT_SYSTEM_PROMPT = (
-    "You are a language detector for text that may mix Chinese, Korean, and "
-    "English. Identify which one of these three languages the text is "
-    "PRIMARILY written in (the dominant one, by intent, not just by raw "
-    "character count). Respond with exactly one word from this set: "
-    "Chinese, Korean, English. No punctuation, no explanation, no other words."
-)
+# ============================================================
+# 字元與語言判斷
+# ============================================================
 
 HAN_RE = re.compile(r"[\u4e00-\u9fff]")
-HANGUL_RE = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]")
+HANGUL_RE = re.compile(
+    r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]"
+)
 LATIN_RE = re.compile(r"[A-Za-z]")
 
-def _script_counts(text: str) -> dict:
+URL_RE = re.compile(
+    r"^(?:https?://\S+|www\.\S+)$",
+    re.IGNORECASE,
+)
+
+NUMBER_RE = re.compile(
+    r"^[-+]?(?:\d{1,3}(?:,\d{3})*|\d+)"
+    r"(?:\.\d+)?$"
+)
+
+SYMBOL_ONLY_RE = re.compile(
+    r"^[\W_]+$",
+    re.UNICODE,
+)
+
+EMOJI_SYMBOL_RE = re.compile(
+    r"^["
+    r"\U0001F300-\U0001FAFF"
+    r"\u2600-\u26FF"
+    r"\u2700-\u27BF"
+    r"\s"
+    r"]+$"
+)
+
+REFUSAL_PATTERN = re.compile(
+    r"\bI apologize\b|"
+    r"\bI'm sorry\b|"
+    r"\bI am sorry\b|"
+    r"\bas an AI\b|"
+    r"as a language model|"
+    r"I cannot (?:provide|assist|translate)|"
+    r"could you (?:please )?"
+    r"(?:clarify|provide more context|verify)",
+    re.IGNORECASE,
+)
+
+
+def script_counts(text: str) -> dict[str, int]:
+    """計算中文、韓文與英文字母數量。"""
+
     return {
         "Chinese": len(HAN_RE.findall(text)),
         "Korean": len(HANGUL_RE.findall(text)),
         "English": len(LATIN_RE.findall(text)),
     }
 
-def detect_by_script(text: str):
-    """用字元範圍做規則式語言判斷。中文/韓文的 Unicode 區段完全不重疊，
-    不會有互相誤判的問題；領先幅度不夠大（代表混雜程度高）則回傳 None，
-    交給 GPT 輔助判斷。"""
-    counts = _script_counts(text)
+
+def detect_by_script(text: str) -> Optional[str]:
+    """
+    優先使用 Unicode 字元比例判斷語言。
+
+    若文字明顯以某一語言為主，直接回傳；
+    若混合程度較高，回傳 None，交給模型判斷。
+    """
+
+    counts = script_counts(text)
     total = sum(counts.values())
+
     if total == 0:
         return None
-    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
-    top_lang, top_count = ranked[0]
-    _, second_count = ranked[1]
+
+    ranked = sorted(
+        counts.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+
+    top_language, top_count = ranked[0]
+    second_count = ranked[1][1]
+
     top_ratio = top_count / total
     lead_ratio = (top_count - second_count) / total
-    if top_ratio >= 0.6 and lead_ratio >= 0.2:
-        return top_lang
+
+    if top_ratio >= 0.60 and lead_ratio >= 0.20:
+        return top_language
+
     return None
 
-def safe_detect(text: str) -> str:
-    script_lang = detect_by_script(text)
-    if script_lang:
-        return script_lang
 
-    # 規則判斷不出主要語言（混雜程度較高），交給 GPT 輔助判斷
-    raw = translate(DETECT_SYSTEM_PROMPT, text)
-    parts = raw.split()
-    if not parts:
-        return ""
-    first = parts[0]
-    lower = first.lower()
-    if lower.startswith("chinese"):
+def is_preserved_abbreviation(text: str) -> bool:
+    """判斷是否為不翻譯的保留縮寫。"""
+
+    return text.strip().upper() in PRESERVED_ABBREVIATIONS
+
+
+def should_skip_translation(text: str) -> bool:
+    """判斷是否應忽略該訊息。"""
+
+    cleaned = text.strip()
+
+    if not cleaned:
+        return True
+
+    # 單純問號
+    if re.fullmatch(r"[?？]+", cleaned):
+        return True
+
+    # 網址
+    if URL_RE.fullmatch(cleaned):
+        return True
+
+    # 純數字
+    if NUMBER_RE.fullmatch(cleaned):
+        return True
+
+    # 純 emoji 或符號
+    if EMOJI_SYMBOL_RE.fullmatch(cleaned):
+        return True
+
+    # 很短且只有標點符號
+    if len(cleaned) <= 2 and SYMBOL_ONLY_RE.fullmatch(cleaned):
+        return True
+
+    # 完全不含中文、韓文或英文字母
+    if not re.search(
+        r"[\u4e00-\u9fff"
+        r"\uac00-\ud7af"
+        r"A-Za-z]",
+        cleaned,
+    ):
+        return True
+
+    return False
+
+
+# ============================================================
+# OpenAI 呼叫
+# ============================================================
+
+def ask_openai(
+    instructions: str,
+    text: str,
+    *,
+    use_cache: bool = True,
+) -> str:
+    """
+    呼叫 OpenAI Responses API。
+
+    使用 instructions 作為系統規則，
+    text 作為使用者輸入。
+    """
+
+    cache_key = (
+        f"{OPENAI_MODEL}\u241f"
+        f"{instructions}\u241f"
+        f"{text}"
+    )
+
+    if use_cache:
+        cached = cache_get(cache_key)
+
+        if cached is not None:
+            logger.info("Translation cache hit")
+            return cached
+
+    logger.info(
+        "Calling OpenAI model=%s input_length=%d",
+        OPENAI_MODEL,
+        len(text),
+    )
+
+    response = openai_client.responses.create(
+        model=OPENAI_MODEL,
+        instructions=instructions,
+        input=text,
+    )
+
+    result = (response.output_text or "").strip()
+
+    if not result:
+        raise ValueError(
+            "OpenAI 回傳空白結果"
+        )
+
+    if REFUSAL_PATTERN.search(result):
+        raise ValueError(
+            "模型回傳疑似拒絕內容："
+            f"{result[:150]!r}"
+        )
+
+    if use_cache:
+        cache_put(cache_key, result)
+
+    return result
+
+
+# ============================================================
+# 語言偵測
+# ============================================================
+
+DETECT_SYSTEM_PROMPT = """
+You are a language detector.
+
+The input may contain a mixture of Traditional Chinese, Korean,
+and English.
+
+Identify the language that is primarily used according to the
+meaning and intent of the sentence, not merely raw character count.
+
+Return exactly one of the following words:
+
+Chinese
+Korean
+English
+
+Do not return punctuation, explanations, Markdown, or any other text.
+""".strip()
+
+
+def safe_detect_language(text: str) -> str:
+    """先使用規則判斷，必要時再交給 OpenAI。"""
+
+    script_language = detect_by_script(text)
+
+    if script_language:
+        return script_language
+
+    raw_result = ask_openai(
+        DETECT_SYSTEM_PROMPT,
+        text,
+    )
+
+    normalized = raw_result.strip().lower()
+
+    if normalized.startswith("chinese"):
         return "Chinese"
-    if lower.startswith("korean"):
+
+    if normalized.startswith("korean"):
         return "Korean"
-    if lower.startswith("english"):
+
+    if normalized.startswith("english"):
         return "English"
-    return first
+
+    logger.warning(
+        "Unexpected language detection result: %r",
+        raw_result,
+    )
+
+    return ""
+
+
+# ============================================================
+# 翻譯提示詞
+# ============================================================
+
+TRANSLATION_PROMPTS = {
+    "English": """
+You are a professional translation engine.
+
+Translate the input into natural, fluent English.
+
+Requirements:
+- Preserve the original meaning and tone.
+- Handle short messages, slang, informal language, and fragments.
+- Use established English names for people, places, characters,
+  products, and brands when such names exist.
+- Do not add explanations.
+- Do not add quotation marks.
+- Do not add labels.
+- Do not use Markdown.
+- Return only the English translation.
+- Always provide the best possible translation.
+""".strip(),
+
+    "Chinese": """
+You are a professional translation engine.
+
+Translate the input into natural Traditional Chinese as used in
+Taiwan.
+
+Requirements:
+- Preserve the original meaning and tone.
+- Handle short messages, slang, informal language, and fragments.
+- Use established Traditional Chinese names used in Taiwan for
+  people, places, characters, products, and brands when available.
+- Avoid Simplified Chinese wording unless it is part of a proper noun.
+- Do not add explanations.
+- Do not add quotation marks.
+- Do not add labels.
+- Do not use Markdown.
+- Return only the Traditional Chinese translation.
+- Always provide the best possible translation.
+""".strip(),
+
+    "Korean": """
+You are a professional translation engine.
+
+Translate the input into natural Korean.
+
+Requirements:
+- Preserve the original meaning and tone.
+- Use natural Korean word order.
+- Use a polite and conversational Korean tone, generally ending
+  in -요 or an appropriate polite form.
+- Handle short messages, slang, informal language, and fragments.
+- Use established Korean names for people, places, characters,
+  products, and brands when available.
+- Do not add explanations.
+- Do not add quotation marks.
+- Do not add labels.
+- Do not use Markdown.
+- Return only the Korean translation.
+- Always provide the best possible translation.
+""".strip(),
+}
+
+
+def translate_text(text: str, target_language: str) -> str:
+    """將文字直接翻譯成指定語言。"""
+
+    prompt = TRANSLATION_PROMPTS.get(target_language)
+
+    if not prompt:
+        raise ValueError(
+            f"不支援的目標語言：{target_language}"
+        )
+
+    return ask_openai(
+        prompt,
+        text,
+    )
+
+
+# ============================================================
+# LINE 回覆
+# ============================================================
+
+def truncate_line_message(text: str) -> str:
+    """避免超過 LINE 單則文字訊息長度限制。"""
+
+    if len(text) <= MAX_LINE_OUTPUT_LENGTH:
+        return text
+
+    return (
+        text[:MAX_LINE_OUTPUT_LENGTH - 20]
+        + "\n\n［內容過長，已截斷］"
+    )
+
+
+def reply_line_message(
+    reply_token: str,
+    text: str,
+) -> None:
+    """使用 LINE Messaging API v3 回覆訊息。"""
+
+    safe_text = truncate_line_message(text)
+
+    with ApiClient(line_configuration) as api_client:
+        messaging_api = MessagingApi(api_client)
+
+        messaging_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[
+                    TextMessage(text=safe_text)
+                ],
+            )
+        )
+
+
+# ============================================================
+# Flask 路由
+# ============================================================
+
+@app.route("/", methods=["GET", "HEAD"])
+def home():
+    """Render 首頁與服務狀態。"""
+
+    return jsonify(
+        {
+            "status": "ok",
+            "service": "W Chinese-English-Korean Translator",
+            "model": OPENAI_MODEL,
+            "webhook": "/callback2",
+        }
+    ), 200
+
+
+@app.route("/health", methods=["GET", "HEAD"])
+def health():
+    """Render 健康檢查端點。"""
+
+    return "OK", 200
+
 
 @app.route("/callback2", methods=["POST"])
 def callback():
-    signature = request.headers.get("X-Line-Signature")
+    """接收 LINE Webhook。"""
+
+    signature = request.headers.get(
+        "X-Line-Signature"
+    )
+
     if not signature:
+        logger.warning(
+            "Missing X-Line-Signature header"
+        )
         abort(400)
+
     body = request.get_data(as_text=True)
 
+    logger.info(
+        "LINE webhook received: body_length=%d",
+        len(body),
+    )
+
     try:
-        handler.handle(body, signature)
+        line_handler.handle(
+            body,
+            signature,
+        )
+
     except InvalidSignatureError:
+        logger.warning(
+            "Invalid LINE webhook signature"
+        )
         abort(400)
 
-    return "OK"
+    except Exception:
+        logger.exception(
+            "Unhandled LINE webhook error"
+        )
+        abort(500)
 
-def _handle_message_inner(event):
+    return "OK", 200
+
+
+# ============================================================
+# LINE 訊息處理
+# ============================================================
+
+def handle_translation_message(
+    event: MessageEvent,
+) -> None:
+    """實際處理使用者文字訊息。"""
+
     user_input = event.message.text.strip()
 
-    # 忽略問號或符號
-    if user_input in {"?", "？", "??", "？？"} or re.fullmatch(r"[?？]+", user_input):
-        return
-    if len(user_input) <= 2 and re.fullmatch(r"[\W_]+", user_input):
-        return
+    logger.info(
+        "Message received: input_length=%d",
+        len(user_input),
+    )
 
-    # 特定縮寫照抄回覆
-    if is_preserved_abbreviation(user_input):
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=user_input))
-        return
-
-    # 跳過翻譯條件
     if should_skip_translation(user_input):
+        logger.info(
+            "Message skipped by rule"
+        )
         return
 
-    lang = safe_detect(user_input)
-    if lang not in LANG_TARGETS:
-        reply = "無法辨識語言，請輸入中文、韓文或英文。"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+    if len(user_input) > MAX_INPUT_LENGTH:
+        reply_line_message(
+            event.reply_token,
+            "文字太長，請分段輸入。"
+            f"每次最多 {MAX_INPUT_LENGTH} 個字元。",
+        )
         return
+
+    if is_preserved_abbreviation(user_input):
+        reply_line_message(
+            event.reply_token,
+            user_input,
+        )
+        return
+
+    source_language = safe_detect_language(
+        user_input
+    )
+
+    if source_language not in LANG_TARGETS:
+        reply_line_message(
+            event.reply_token,
+            "無法辨識語言，請輸入中文、英文或韓文。",
+        )
+        return
+
+    target_languages = LANG_TARGETS[
+        source_language
+    ]
 
     results = []
 
-    for target in LANG_TARGETS[lang]:
+    for target_language in target_languages:
         try:
-            if lang == "Chinese" and target == "Korean":
-                matured_en = translate(
-                    "You are rewriting Traditional Chinese text into natural, mature "
-                    "English, to be used as an intermediate step before Korean "
-                    "translation. Output ONLY the English text - no explanations, "
-                    "no commentary. Always produce your best-effort rewrite, even if "
-                    "the input is short, informal, or slang - never refuse or ask for "
-                    "clarification.",
-                    user_input,
-                )
-                result = translate(
-                    "You are a translation engine. Translate the given English text "
-                    "into Korean. Use polite tone (-요/-습니다) and natural word order. "
-                    "Output ONLY the Korean translation - no explanations, no "
-                    "commentary. If a proper noun (person, place, character, brand) "
-                    "has a well-known, commonly used Korean name, use that name "
-                    "instead of a literal translation. Always produce your "
-                    "best-effort translation, even if the input is short or "
-                    "ambiguous - never refuse or ask for clarification.",
-                    matured_en,
-                )
-            elif target == "English":
-                result = translate(
-                    "You are a translation engine. Translate the given text into "
-                    "natural English. Output ONLY the translated text - no "
-                    "explanations, no commentary. If the text contains a proper "
-                    "noun (person, place, character, brand) that has a well-known, "
-                    "commonly used English name, use that established name instead "
-                    "of a literal translation. Always produce your best-effort "
-                    "translation, even if the input is short, informal, or "
-                    "ambiguous - never refuse or ask for clarification.",
-                    user_input,
-                )
-            elif target == "Chinese":
-                result = translate(
-                    "You are a translation engine. Translate the given text into "
-                    "Traditional Chinese. Output ONLY the translated text - no "
-                    "explanations, no commentary. If the text contains a proper "
-                    "noun that has a well-known, locally used Chinese name, use "
-                    "that name instead of a literal translation. Always produce "
-                    "your best-effort translation, even if the input is short, "
-                    "informal, or ambiguous - never refuse or ask for "
-                    "clarification.",
-                    user_input,
-                )
-            elif target == "Korean":
-                result = translate(
-                    "You are a translation engine. Translate the given text into "
-                    "Korean. Use polite tone (-요/-습니다) and natural word order. "
-                    "Output ONLY the translated text - no explanations, no "
-                    "commentary. If the text contains a proper noun that has a "
-                    "well-known, commonly used Korean name, use that name instead "
-                    "of a literal translation. Always produce your best-effort "
-                    "translation, even if the input is short, informal, or "
-                    "ambiguous - never refuse or ask for clarification.",
-                    user_input,
-                )
-            else:
-                result = "(略)"
+            translated = translate_text(
+                user_input,
+                target_language,
+            )
+
+            results.append(translated)
+
         except Exception:
-            logger.exception("translate failed: lang=%s target=%s text=%s", lang, target, user_input)
-            result = "(略)"
-        results.append(result or "(略)")
+            logger.exception(
+                "Translation failed: "
+                "source=%s target=%s text=%r",
+                source_language,
+                target_language,
+                user_input[:200],
+            )
+
+            results.append(
+                f"［{LANGUAGE_DISPLAY_NAMES[target_language]}"
+                "翻譯失敗］"
+            )
 
     reply = "\n".join(results)
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
+    reply_line_message(
+        event.reply_token,
+        reply,
+    )
+
+
+@line_handler.add(
+    MessageEvent,
+    message=TextMessageContent,
+)
+def handle_message(event: MessageEvent):
+    """LINE 文字訊息事件入口。"""
+
     try:
-        _handle_message_inner(event)
+        handle_translation_message(event)
+
     except Exception:
-        logger.exception("handle_message failed")
+        logger.exception(
+            "Message handler failed"
+        )
+
         try:
-            line_bot_api.reply_message(
-                event.reply_token, TextSendMessage(text="翻譯發生錯誤，請稍後再試")
+            reply_line_message(
+                event.reply_token,
+                "翻譯發生錯誤，請稍後再試。",
             )
+
         except Exception:
-            logger.exception("failed to send error reply")
+            logger.exception(
+                "Failed to send LINE error reply"
+            )
+
+
+# ============================================================
+# 本機啟動
+# ============================================================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(
+        os.environ.get("PORT", "5000")
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+    )
