@@ -61,7 +61,7 @@ def translate(system_prompt: str, text: str) -> str:
     if cached := _cache_get(cache_key):
         return cached
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5.6-luna",
         temperature=0,
         messages=[
             {"role": "system", "content": system_prompt},
