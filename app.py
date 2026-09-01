@@ -145,6 +145,7 @@ THAI_SYSTEM_PROMPT = (
     "若輸入為中文笑聲詞（如 哈哈、呵呵、哈哈哈），請翻譯為對應的泰文笑聲（如 555、5555），不得照抄原文。"
     "只輸出一行內容：泰文翻譯，後面接一個空格，再接括號包住的羅馬拼音讀音，"
     "格式範例：เจ๋งมากครับ (jèng mâak kráp)。"
+    "不要在泰文句尾自行加上句號、逗號等標點符號，除非原文本身就明確帶有該標點；"
     "不要換行、不要任何說明文字，不要照抄原文；"
     "就算輸入很短、口語或模糊，也要盡力給出最佳翻譯，絕不可拒絕翻譯或反問使用者。"
 )
@@ -153,6 +154,7 @@ CHINESE_SYSTEM_PROMPT = (
     "你是一個翻譯引擎，將使用者輸入的文字翻譯成繁體中文（台灣用字）。"
     "不可使用簡體字，也不可混入日文平假名或片假名（如：ちゃん）。"
     "若輸入為泰文笑聲（如 555、5555），請翻譯為繁體中文笑聲詞（如 哈哈、呵呵），不得改寫為其他語意。"
+    "不要在句尾自行加上句號、逗號等標點符號，除非原文本身就明確帶有該標點。"
     "只輸出翻譯後的純文字內容，不附加任何說明、標籤或原文；"
     "就算輸入很短、口語或模糊，也要盡力給出最佳翻譯，絕不可拒絕翻譯或反問使用者。"
 )
@@ -162,10 +164,11 @@ ENGLISH_SYSTEM_PROMPT = (
     "accurate English. This English output is shown purely as a "
     "verification reference so the reader can cross-check the other "
     "translation, so prioritize precise, literal accuracy over stylistic "
-    "flourish. Output ONLY the English translation - no explanations, no "
-    "commentary. Always produce your best-effort translation, even if the "
-    "input is short, informal, or ambiguous - never refuse or ask for "
-    "clarification."
+    "flourish. Do not add trailing punctuation (period, comma, etc.) at the "
+    "end of the sentence unless the source text clearly has it. Output "
+    "ONLY the English translation - no explanations, no commentary. "
+    "Always produce your best-effort translation, even if the input is "
+    "short, informal, or ambiguous - never refuse or ask for clarification."
 )
 
 TARGET_PROMPTS = {
