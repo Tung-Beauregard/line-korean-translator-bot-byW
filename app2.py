@@ -169,7 +169,13 @@ HAN_RE = re.compile(r"[\u4e00-\u9fff]")
 HANGUL_RE = re.compile(
     r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]"
 )
-LATIN_RE = re.compile(r"[A-Za-z]")
+# 英文以「詞」為單位計算，中文與韓文以「字」為單位。
+# 一個漢字或韓文字承載的資訊量接近一個英文單字；
+# 若逐個字母計算，夾在中文句子裡的英文人名
+# （例如「被kelly貼」）會被誤判成英文句子。
+LATIN_WORD_RE = re.compile(
+    r"[A-Za-z]+(?:['’][A-Za-z]+)*"
+)
 
 URL_RE = re.compile(
     r"^(?:https?://\S+|www\.\S+)$",
@@ -209,12 +215,12 @@ REFUSAL_PATTERN = re.compile(
 
 
 def script_counts(text: str) -> dict[str, int]:
-    """計算中文、韓文與英文字母數量。"""
+    """計算中文字、韓文字與英文單字的數量。"""
 
     return {
         "Chinese": len(HAN_RE.findall(text)),
         "Korean": len(HANGUL_RE.findall(text)),
-        "English": len(LATIN_RE.findall(text)),
+        "English": len(LATIN_WORD_RE.findall(text)),
     }
 
 
