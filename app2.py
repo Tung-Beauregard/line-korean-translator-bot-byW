@@ -3,6 +3,7 @@ import os
 import re
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from flask import Flask, abort, jsonify, request
@@ -500,6 +501,74 @@ def translate_text(text: str, target_language: str) -> str:
     )
 
 
+def translate_one_target(
+    text: str,
+    source_language: str,
+    target_language: str,
+) -> str:
+    """翻譯成單一目標語言；失敗時回傳提示字串而不拋出例外。"""
+
+    try:
+        return translate_text(
+            text,
+            target_language,
+        )
+
+    except Exception:
+        logger.exception(
+            "Translation failed: "
+            "source=%s target=%s text=%r",
+            source_language,
+            target_language,
+            text[:200],
+        )
+
+        return (
+            f"［{LANGUAGE_DISPLAY_NAMES[target_language]}"
+            "翻譯失敗］"
+        )
+
+
+def translate_to_targets(
+    text: str,
+    source_language: str,
+    target_languages: list[str],
+) -> list[str]:
+    """
+    同時翻譯成多個目標語言。
+
+    每個目標語言各要呼叫一次 OpenAI，串行時最壞情況是單次逾時
+    的兩倍，可能拖過 LINE reply token 的有效時間。這裡改成並行
+    送出，回傳順序仍與 target_languages 一致。
+    """
+
+    if len(target_languages) <= 1:
+        return [
+            translate_one_target(
+                text,
+                source_language,
+                target_language,
+            )
+            for target_language in target_languages
+        ]
+
+    with ThreadPoolExecutor(
+        max_workers=len(target_languages),
+        thread_name_prefix="translate",
+    ) as executor:
+        futures = [
+            executor.submit(
+                translate_one_target,
+                text,
+                source_language,
+                target_language,
+            )
+            for target_language in target_languages
+        ]
+
+        return [future.result() for future in futures]
+
+
 # ============================================================
 # LINE 回覆
 # ============================================================
@@ -656,30 +725,11 @@ def handle_translation_message(
         source_language
     ]
 
-    results = []
-
-    for target_language in target_languages:
-        try:
-            translated = translate_text(
-                user_input,
-                target_language,
-            )
-
-            results.append(translated)
-
-        except Exception:
-            logger.exception(
-                "Translation failed: "
-                "source=%s target=%s text=%r",
-                source_language,
-                target_language,
-                user_input[:200],
-            )
-
-            results.append(
-                f"［{LANGUAGE_DISPLAY_NAMES[target_language]}"
-                "翻譯失敗］"
-            )
+    results = translate_to_targets(
+        user_input,
+        source_language,
+        target_languages,
+    )
 
     reply = "\n".join(results)
 
