@@ -132,13 +132,25 @@ def should_skip_translation(text: str) -> bool:
 
     return False
 
+# 訊息裡夾帶的網址（如轉貼新聞）不翻譯也不回覆，只翻譯文字部分；
+# 網址原本就在對方的訊息裡，不需要再重複一次
+URL_IN_TEXT_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+
+def _strip_urls(text: str) -> str:
+    without_urls = URL_IN_TEXT_RE.sub("", text)
+    lines = [line.strip() for line in without_urls.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
 # ----------------------------------------
 # 各目標語言的翻譯 system prompt
 # ----------------------------------------
 
 THAI_SYSTEM_PROMPT = (
     "你是一個翻譯引擎，將使用者輸入的文字翻譯成泰文。"
-    "語氣設定為男性對女性說話，句尾語氣助詞一律使用「ครับ」。"
+    "語氣設定為男性對女性說話，以 LINE 聊天的自然口吻為主，禮貌但不拘謹。"
+    "句尾語氣助詞「ครับ」要看情況加：原文是在跟對方說話的句子（對話、問候、回應、請求、詢問）才加，"
+    "一句話只在句尾加一次，不要每個子句都加；"
+    "原文只是標題、標籤、名詞片語、新聞標題、清單項目或轉貼的內容時，不加語氣助詞，直接翻譯即可。"
     "用字遣詞需禮貌且溫柔，避免生硬、命令式或過於直接的講法，"
     "但不可為了溫柔而更動原文語意或添加原文沒有的內容。"
     "若輸入包含英文技術詞彙或品牌名稱（如 Bug、Line），該英文部分保留原樣，不要翻譯。"
@@ -149,6 +161,9 @@ THAI_SYSTEM_PROMPT = (
     "不可翻譯成文字描述、不可換成其他符號、也不可自行增加或刪除；"
     "原文沒有的 emoji 不可自行加上。"
     "括號內的羅馬拼音只標泰文的讀音，不要把 emoji 放進括號，也不要為 emoji 標音。"
+    "原文中的數字、日期、時間、編號、計數與單位（如 (1/1)、#3、2024/05/01、10:30、3kg）"
+    "必須原樣保留在譯文對應位置，不可省略或改寫；"
+    "括號羅馬拼音是另外附加在最後的，不可因此刪掉原文本身的括號內容。"
     "只輸出一行內容：泰文翻譯，後面接一個空格，再接括號包住的羅馬拼音讀音，"
     "格式範例：เจ๋งมากครับ (jèng mâak kráp)。"
     "不要在泰文句尾自行加上句號、逗號等標點符號，除非原文本身就明確帶有該標點；"
@@ -167,6 +182,8 @@ CHINESE_SYSTEM_PROMPT = (
     "若原文包含 emoji 或顏文字，一律原樣保留在譯文中的對應位置，"
     "不可翻譯成文字描述、不可換成其他符號、也不可自行增加或刪除；"
     "原文沒有的 emoji 不可自行加上。"
+    "原文中的數字、日期、時間、編號、計數與單位（如 (1/1)、#3、2024/05/01、10:30、3kg）"
+    "必須原樣保留在譯文對應位置，不可省略或改寫；泰文笑聲 555 不在此限，仍依上述規則翻成笑聲詞。"
     "不要在句尾自行加上句號、逗號等標點符號，除非原文本身就明確帶有該標點。"
     "只輸出翻譯後的純文字內容，不附加任何說明、標籤或原文；"
     "就算輸入很短、口語或模糊，也要盡力給出最佳翻譯，絕不可拒絕翻譯或反問使用者。"
@@ -188,6 +205,11 @@ ENGLISH_SYSTEM_PROMPT = (
     "- do not translate them into words, do not replace them with other "
     "symbols, and do not add or remove any. Never introduce emoji that "
     "are not present in the source. "
+    "Numbers, dates, times, IDs, counters and units in the source (e.g. "
+    "(1/1), #3, 2024/05/01, 10:30, 3kg) must be kept exactly as-is in the "
+    "corresponding position - never drop or rewrite them. The only "
+    "exception is Thai laughter written as 555 or 5555, which should be "
+    "rendered as English laughter such as hahaha. "
     "Do not add trailing punctuation (period, comma, etc.) at "
     "the end of the sentence unless the source text clearly has it. "
     "Output ONLY the English translation - no explanations, no "
@@ -221,7 +243,8 @@ def callback():
     return 'OK'
 
 def _handle_message_inner(event):
-    user_input = event.message.text.strip()
+    # 轉貼新聞這類「文字 + 網址」的訊息只翻譯文字，網址不進模型也不回覆
+    user_input = _strip_urls(event.message.text.strip())
 
     # 泰式笑聲（連續3個以上的5，如 555、5555）強制視為泰文來源
     is_thai_laugh = bool(re.fullmatch(r"5{3,}", user_input))
