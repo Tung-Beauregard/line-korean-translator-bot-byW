@@ -303,6 +303,29 @@ def should_skip_translation(text: str) -> bool:
     return False
 
 
+# 訊息裡夾帶的網址（例如轉貼 LINE TODAY 新聞）不翻譯也不回覆，
+# 只翻譯文字部分；網址原本就在對方的訊息裡，不需要再重複一次。
+URL_IN_TEXT_RE = re.compile(
+    r"(?:https?://|www\.)\S+",
+    re.IGNORECASE,
+)
+
+
+def strip_urls(text: str) -> str:
+    """移除訊息中的網址，只留下要翻譯的文字。"""
+
+    without_urls = URL_IN_TEXT_RE.sub("", text)
+
+    lines = [
+        line.strip()
+        for line in without_urls.splitlines()
+    ]
+
+    return "\n".join(
+        line for line in lines if line
+    ).strip()
+
+
 # ============================================================
 # OpenAI 呼叫
 # ============================================================
@@ -682,11 +705,15 @@ def handle_translation_message(
 ) -> None:
     """實際處理使用者文字訊息。"""
 
-    user_input = event.message.text.strip()
+    raw_input = event.message.text.strip()
+
+    # 轉貼新聞這類「文字 + 網址」的訊息只翻譯文字，網址不進模型也不回覆
+    user_input = strip_urls(raw_input)
 
     logger.info(
-        "Message received: input_length=%d",
+        "Message received: input_length=%d urls_removed=%s",
         len(user_input),
+        raw_input != user_input,
     )
 
     if should_skip_translation(user_input):
