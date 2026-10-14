@@ -43,7 +43,7 @@ REFUSAL_PATTERN = re.compile(
 def translate(system_prompt: str, text: str) -> str:
     response = client.chat.completions.create(
         # gpt-5 之後的模型只接受預設 temperature，帶 0 會被 API 退回，所以不指定
-        model="gpt-6.1-luna",
+        model="gpt-6-luna",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
